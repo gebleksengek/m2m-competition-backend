@@ -1,0 +1,10 @@
+.vscode
+
+
+/m2m-backend
+/m2m-backend.exe
+/config.yml
+/credentials.json
+/token.json
+/ffprobe.exe
+/ffprobe

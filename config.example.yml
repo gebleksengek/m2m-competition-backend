@@ -1,0 +1,15 @@
+server:
+    host: 127.0.0.1
+    port: 8080
+jwt:
+    secret-key: "secretSecretSecret"
+google:
+    drive:
+        credential: "credentials.json"
+        save-directory: "savedir"
+mongodb:
+    username: "root"
+    password: ""
+    host: "127.0.0.1"
+    port: 123
+    database: "database"
