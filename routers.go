@@ -548,6 +548,33 @@ func getGalleries(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	admins := map[string]Admin{}
+
+	for i, v := range galleries {
+		if val, ok := admins[v.Uploader.Username]; ok {
+			galleries[i].Uploader.Name = val.Name
+			galleries[i].Uploader.ProfileImageURL = val.ProfileImageURL
+			galleries[i].Uploader.Username = val.Username
+			continue
+		}
+
+		admin := &Admin{}
+		err := mgm.Coll(admin).FindOne(
+			mgm.Ctx(),
+			bson.M{
+				"username": v.Uploader.Username,
+			},
+		).Decode(&admin)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		admins[admin.Username] = *admin
+		galleries[i].Uploader.Name = admin.Name
+		galleries[i].Uploader.ProfileImageURL = admin.ProfileImageURL
+		galleries[i].Uploader.Username = admin.Username
+	}
+
 	galleriesMarshal, err := json.Marshal(galleries)
 	if err != nil {
 		log.Println(err)
