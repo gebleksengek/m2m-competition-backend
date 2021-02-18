@@ -786,7 +786,7 @@ func Router() *mux.Router {
 
 	admin.Use(JSONResponseMiddleware)
 	admin.HandleFunc("/create", createAdmin).Methods("POST")
-	admin.HandleFunc("/login", adminLogin).Methods("POST")
+	admin.HandleFunc("/login", adminLogin).Methods("POST", "OPTIONS")
 
 	adminAuth := admin.PathPrefix("/manage").Subrouter()
 	adminAuth.Use(VerifyAuthTokenMiddleware)
