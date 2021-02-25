@@ -26,7 +26,13 @@ import (
 func CORSMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Access-Control-Allow-Origin", "*")
-		rw.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		rw.Header().Set("Access-Control-Allow-Headers", "Content-Type,authorization")
+		rw.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS,PUT")
+
+		if r.Method == "OPTIONS" {
+			rw.WriteHeader(http.StatusOK)
+			return
+		}
 		next.ServeHTTP(rw, r)
 	})
 }
@@ -43,7 +49,7 @@ func JSONResponseMiddleware(next http.Handler) http.Handler {
 func VerifyAuthTokenMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		tokenString := extractTokenFromRequest(r)
-		token, err := verifyJWTToken(jwtConfig.SecretKey, tokenString)
+		token, err := verifyJWTToken(tokenString)
 		if err != nil {
 			result := &HTTPResponse{}
 			result.ErrorMsg = err.Error()

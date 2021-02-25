@@ -140,4 +140,5 @@ func MongoDBInitialize(mongoDBConfig MongoDBConfig) {
 	} else {
 		log.Println("Success to connect MongoDB")
 	}
+
 }

@@ -32,7 +32,8 @@ type Config struct {
 		Port string `yaml:"port"`
 	} `yaml:"server"`
 	JWT struct {
-		SecretKey string `yaml:"secret-key"`
+		SecretKey        string `yaml:"secret-key"`
+		RefreshSecretKey string `yaml:"refresh-secret-key"`
 	} `yaml:"jwt"`
 	Google struct {
 		Drive struct {
@@ -47,6 +48,10 @@ type Config struct {
 		Port     int    `yaml:"port"`
 		Database string `yaml:"database"`
 	} `yaml:"mongodb"`
+	Redis struct {
+		Host string `yaml:"host"`
+		Port string `yaml:"port"`
+	}
 }
 
 // NewConfig returns a new decoded Config struct

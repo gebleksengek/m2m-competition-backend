@@ -170,7 +170,14 @@ func adminLogin(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := createJWTToken(jwtConfig.SecretKey, adminFromDB.Username)
+	token, err := createJWTToken(adminFromDB.Username)
+	if err != nil {
+		result.ErrorMsg = err.Error()
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	err = createAuth(adminFromDB.Username, token)
 	if err != nil {
 		result.ErrorMsg = err.Error()
 		json.NewEncoder(rw).Encode(result)
@@ -178,8 +185,15 @@ func adminLogin(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	data, err := json.Marshal(
-		map[string]string{
-			"token": token,
+		map[string]interface{}{
+			"data": map[string]interface{}{
+				"id":                adminFromDB.ID,
+				"username":          adminFromDB.Username,
+				"name":              adminFromDB.Name,
+				"profile_image_url": adminFromDB.ProfileImageURL,
+			},
+			"accessToken":  token.AccessToken,
+			"refreshToken": token.RefreshToken,
 		},
 	)
 	if err != nil {
@@ -189,6 +203,217 @@ func adminLogin(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	result.Data = data
+
+	result.Status = true
+
+	json.NewEncoder(rw).Encode(result)
+	return
+}
+
+func adminRefreshToken(rw http.ResponseWriter, r *http.Request) {
+	result := &HTTPResponse{}
+
+	mapToken := &struct {
+		RefreshToken string `json:"refreshToken"`
+	}{}
+	rules := govalidator.MapData{
+		"refreshToken": []string{"required"},
+	}
+
+	opts := govalidator.Options{
+		Request: r,
+		Data:    mapToken,
+		Rules:   rules,
+	}
+
+	v := govalidator.New(opts)
+
+	if e := v.ValidateJSON(); len(e) != 0 {
+		result.ValidationError = e
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	refreshToken := mapToken.RefreshToken
+	token, err := jwt.Parse(refreshToken, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		return []byte(cfg.JWT.RefreshSecretKey), nil
+	})
+	if err != nil {
+		log.Println(err)
+		result.ErrorMsg = "Refresh token expired"
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+	if _, ok := token.Claims.(jwt.Claims); !ok && !token.Valid {
+		log.Println(err)
+		result.ErrorMsg = err.Error()
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if ok && token.Valid {
+		refreshUUID, ok := claims["refresh_uuid"].(string)
+		if !ok {
+			log.Println(err)
+			result.ErrorMsg = err.Error()
+			json.NewEncoder(rw).Encode(result)
+			return
+		}
+		username, ok := claims["username"].(string)
+		if !ok {
+			log.Println(err)
+			result.ErrorMsg = err.Error()
+			json.NewEncoder(rw).Encode(result)
+			return
+		}
+		deleted, err := deleteAuth(refreshUUID)
+		if err != nil || deleted == 0 {
+			log.Println(err)
+			result.ErrorMsg = "unauthorized"
+			json.NewEncoder(rw).Encode(result)
+			return
+		}
+
+		ts, err := createJWTToken(username)
+		if err != nil {
+			log.Println(err)
+			result.ErrorMsg = err.Error()
+			json.NewEncoder(rw).Encode(result)
+			return
+		}
+		err = createAuth(username, ts)
+		if err != nil {
+			log.Println(err)
+			result.ErrorMsg = err.Error()
+			json.NewEncoder(rw).Encode(result)
+			return
+		}
+
+		result.Data, err = json.Marshal(map[string]string{
+			"accessToken":  ts.AccessToken,
+			"refreshToken": ts.RefreshToken,
+		})
+
+		if err != nil {
+			log.Println(err)
+			result.ErrorMsg = err.Error()
+			json.NewEncoder(rw).Encode(result)
+			return
+		}
+		result.Status = true
+	}
+
+	json.NewEncoder(rw).Encode(result)
+
+	return
+}
+
+func adminLogout(rw http.ResponseWriter, r *http.Request) {
+	result := &HTTPResponse{
+		Status: false,
+	}
+	au, err := extractTokenMetadata(r)
+	if err != nil {
+		log.Println(err)
+		result.ErrorMsg = err.Error()
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+	deleted, err := deleteAuth(au.AccessUUID)
+	if err != nil || deleted == 0 {
+		log.Println(err)
+		result.ErrorMsg = "unauthorized"
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	result.Status = true
+	json.NewEncoder(rw).Encode(result)
+	return
+}
+
+func adminChangePassword(rw http.ResponseWriter, r *http.Request) {
+	result := &HTTPResponse{}
+
+	mapPassword := &struct {
+		Password       string `json:"password"`
+		PasswordVerify string `json:"verify"`
+	}{}
+
+	rules := govalidator.MapData{
+		"password": []string{"required", "between:8,32"},
+		"verify":   []string{"required", "between:8,32"},
+	}
+
+	opts := govalidator.Options{
+		Request: r,
+		Data:    mapPassword,
+		Rules:   rules,
+	}
+
+	v := govalidator.New(opts)
+	if e := v.ValidateJSON(); len(e) != 0 {
+		result.ValidationError = e
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	if mapPassword.Password != mapPassword.PasswordVerify {
+		result.ErrorMsg = "Password and Verify Password not equal"
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	meta, err := extractTokenMetadata(r)
+	if err != nil {
+		result.ErrorMsg = err.Error()
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	admin := &Admin{}
+
+	err = mgm.Coll(admin).FindOne(
+		mgm.Ctx(),
+		bson.M{
+			"username": meta.Username,
+		},
+	).Decode(&admin)
+
+	if err != nil {
+		// result.ErrorMsg = "Username not exist"
+		result.ErrorMsg = err.Error()
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	hash, err := hashPassword(mapPassword.Password)
+	if err != nil {
+		result.ErrorMsg = err.Error()
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+	admin.Password = hash
+	admin.UpdatedAt = time.Now()
+
+	err = mgm.Coll(admin).Update(
+		admin,
+	)
+	if err != nil {
+		result.ErrorMsg = err.Error()
+
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
 
 	result.Status = true
 
@@ -232,7 +457,7 @@ func createCarousel(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenString := extractTokenFromRequest(r)
-	token, _ := verifyJWTToken(jwtConfig.SecretKey, tokenString)
+	token, _ := verifyJWTToken(tokenString)
 	claims := token.Claims.(jwt.MapClaims)
 	username := claims["username"].(string)
 
@@ -410,7 +635,7 @@ func createGallery(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenString := extractTokenFromRequest(r)
-	token, _ := verifyJWTToken(jwtConfig.SecretKey, tokenString)
+	token, _ := verifyJWTToken(tokenString)
 	claims := token.Claims.(jwt.MapClaims)
 	username := claims["username"].(string)
 
@@ -507,6 +732,94 @@ func createGallery(rw http.ResponseWriter, r *http.Request) {
 	}
 
 	result.Data = galleryMarshal
+	result.Status = true
+
+	json.NewEncoder(rw).Encode(result)
+	return
+}
+
+func getAllContestant(rw http.ResponseWriter, r *http.Request) {
+	result := &HTTPResponse{}
+
+	sortQ, _ := r.URL.Query()["sort"]
+	sortByQ, _ := r.URL.Query()["sort_by"]
+	limitQ, _ := r.URL.Query()["limit"]
+	pageQ, _ := r.URL.Query()["page"]
+
+	sortBy := "updated_at"
+	sort := "1"
+	limit := 1
+	page := 1
+
+	if len(sortQ) > 0 {
+		sort = sortQ[0]
+		if sort != "1" &&
+			sort != "-1" {
+			sort = "1"
+		}
+	}
+	if len(sortByQ) > 0 {
+		sortBy = sortByQ[0]
+	}
+	if len(limitQ) > 0 {
+		if i, e := strconv.Atoi(limitQ[0]); e == nil {
+			if i >= 0 {
+				limit = i
+			}
+		}
+	}
+	if len(pageQ) > 0 {
+		if i, e := strconv.Atoi(pageQ[0]); e == nil {
+			if i >= 1 {
+				page = i
+			}
+		}
+	}
+
+	sortN, _ := strconv.Atoi(sort)
+
+	contestant := []Contestant{}
+
+	skip := page*limit - limit
+
+	findOptions := &options.FindOptions{}
+	if page != 0 {
+		findOptions.SetLimit(int64(limit))
+		findOptions.SetSort(bson.M{sortBy: sortN})
+		findOptions.SetSkip(int64(skip))
+	}
+
+	err := mgm.Coll(&Contestant{}).SimpleFind(&contestant, bson.M{}, findOptions)
+	if err != nil {
+		log.Println(err)
+		result.ErrorMsg = err.Error()
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+	total, err := mgm.Coll(&Contestant{}).CountDocuments(mgm.Ctx(), bson.M{})
+	if err != nil {
+		log.Println(err)
+		result.ErrorMsg = err.Error()
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	resultMarshal, err := json.Marshal(map[string]interface{}{
+		"data":    contestant,
+		"sort_by": sortBy,
+		"sort":    sort,
+		"limit":   limit,
+		"page":    page,
+		"total":   total,
+	})
+	if err != nil {
+		log.Println(err)
+		result.ErrorMsg = err.Error()
+		json.NewEncoder(rw).Encode(result)
+		return
+	}
+
+	result.Data = resultMarshal
 	result.Status = true
 
 	json.NewEncoder(rw).Encode(result)
@@ -761,6 +1074,7 @@ func getAsset(rw http.ResponseWriter, r *http.Request) {
 
 	rw.Header().Set("Cache-Control", "public, max-age=31536000")
 
+	webpbin.SkipDownload()
 	err = webpbin.NewCWebP().Quality(80).Input(asset.Body).Output(rw).Run()
 	if err != nil {
 		log.Panicln(err)
@@ -785,25 +1099,35 @@ func Router() *mux.Router {
 	apiV1.Use(CORSMiddleware)
 
 	admin.Use(JSONResponseMiddleware)
-	admin.HandleFunc("/create", createAdmin).Methods("POST")
+	admin.HandleFunc("/create", createAdmin).Methods("POST", "OPTIONS")
 	admin.HandleFunc("/login", adminLogin).Methods("POST", "OPTIONS")
+	admin.HandleFunc("/logout", adminLogout).Methods("GET", "OPTIONS")
+	admin.HandleFunc("/refresh-token", adminRefreshToken).Methods("POST", "OPTIONS")
 
-	adminAuth := admin.PathPrefix("/manage").Subrouter()
+	adminAuth := admin.PathPrefix("/").Subrouter()
 	adminAuth.Use(VerifyAuthTokenMiddleware)
-	adminAuth.HandleFunc("/carousel", createCarousel).Methods("POST")
-	adminAuth.HandleFunc("/gallery", createGallery).Methods("POST")
+
+	adminAuthProfile := adminAuth.PathPrefix("/profile").Subrouter()
+	adminAuthProfile.HandleFunc("/change-password", adminChangePassword).Methods("PUT", "OPTIONS")
+
+	adminAuthManage := adminAuth.PathPrefix("/manage").Subrouter()
+	adminAuthManage.HandleFunc("/carousel", createCarousel).Methods("POST", "OPTIONS")
+	adminAuthManage.HandleFunc("/gallery", createGallery).Methods("POST", "OPTIONS")
+
+	adminAuthContestant := adminAuth.PathPrefix("/contestant").Subrouter()
+	adminAuthContestant.HandleFunc("/list", getAllContestant).Methods("GET", "OPTIONS")
 
 	contest.Use(JSONResponseMiddleware)
 	contest.HandleFunc("/uploadVideo", uploadVideo).Methods("POST", "OPTIONS")
-	contest.HandleFunc("/video/{id}", getVideo).Methods("GET")
+	contest.HandleFunc("/video/{id}", getVideo).Methods("GET", "OPTIONS")
 
 	carousel.Use(JSONResponseMiddleware)
-	carousel.HandleFunc("", getAllCarousel).Methods("GET")
+	carousel.HandleFunc("", getAllCarousel).Methods("GET", "OPTIONS")
 
 	gallery.Use(JSONResponseMiddleware)
-	gallery.HandleFunc("", getGalleries).Methods("GET")
+	gallery.HandleFunc("", getGalleries).Methods("GET", "OPTIONS")
 
-	assets.HandleFunc("/{id}", getAsset).Methods("GET")
+	assets.HandleFunc("/{id}", getAsset).Methods("GET", "OPTIONS")
 
 	return router
 }

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
+	"github.com/twinj/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -52,19 +53,63 @@ func checkPasswordHash(password, hash string) bool {
 	return err == nil
 }
 
-func createJWTToken(secretKey, username string) (string, error) {
+func createAuth(username string, td *tokenDetails) error {
+	at := time.Unix(td.AtExpires, 0)
+	rt := time.Unix(td.RtExpires, 0)
+	now := time.Now()
+
+	err := redisClient.Set(td.AccessUUID, username, at.Sub(now)).Err()
+	if err != nil {
+		return err
+	}
+
+	err = redisClient.Set(td.RefreshUUID, username, rt.Sub(now)).Err()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func deleteAuth(givenUUID string) (int64, error) {
+	deleted, err := redisClient.Del(givenUUID).Result()
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+func createJWTToken(username string) (*tokenDetails, error) {
+	td := &tokenDetails{}
+	td.AtExpires = time.Now().Add(time.Minute * 15).Unix()
+	td.AccessUUID = uuid.NewV4().String()
+
+	td.RtExpires = time.Now().Add(time.Hour * 24 * 7).Unix()
+	td.RefreshUUID = uuid.NewV4().String()
+
 	atClaims := jwt.MapClaims{}
 	atClaims["username"] = username
-	atClaims["exp"] = time.Now().Add(time.Minute * 15).Unix()
+	atClaims["access_uuid"] = td.AccessUUID
+	atClaims["exp"] = td.AtExpires
 
 	at := jwt.NewWithClaims(jwt.SigningMethodHS256, atClaims)
 
-	token, err := at.SignedString([]byte(secretKey))
+	var err error
+	td.AccessToken, err = at.SignedString([]byte(cfg.JWT.SecretKey))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	return token, nil
+	rtClaims := jwt.MapClaims{}
+	rtClaims["refresh_uuid"] = td.RefreshUUID
+	rtClaims["username"] = username
+	rtClaims["exp"] = td.RtExpires
+	rt := jwt.NewWithClaims(jwt.SigningMethodHS256, rtClaims)
+	td.RefreshToken, err = rt.SignedString([]byte(cfg.JWT.RefreshSecretKey))
+	if err != nil {
+		return nil, err
+	}
+
+	return td, nil
 }
 
 func extractTokenFromRequest(r *http.Request) string {
@@ -79,12 +124,36 @@ func extractTokenFromRequest(r *http.Request) string {
 	return ""
 }
 
-func verifyJWTToken(secretKey, tokenString string) (*jwt.Token, error) {
+func extractTokenMetadata(r *http.Request) (*accessDetails, error) {
+	token, err := verifyJWTToken(extractTokenFromRequest(r))
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if ok && token.Valid {
+		accessUUID, ok := claims["access_uuid"].(string)
+		if !ok {
+			return nil, err
+		}
+		username, ok := claims["username"].(string)
+		if !ok {
+			return nil, err
+		}
+		return &accessDetails{
+			AccessUUID: accessUUID,
+			Username:   username,
+		}, nil
+	}
+
+	return nil, nil
+}
+
+func verifyJWTToken(tokenString string) (*jwt.Token, error) {
 	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
-		return []byte(secretKey), nil
+		return []byte(cfg.JWT.SecretKey), nil
 	})
 	if err != nil {
 		return nil, err

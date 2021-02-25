@@ -29,3 +29,17 @@ type HTTPResponse struct {
 	ValidationError url.Values      `json:"validationError,omitempty"`
 	ErrorMsg        string          `json:"errorMsg,omitempty"`
 }
+
+type tokenDetails struct {
+	AccessToken  string
+	RefreshToken string
+	AccessUUID   string
+	RefreshUUID  string
+	AtExpires    int64
+	RtExpires    int64
+}
+
+type accessDetails struct {
+	AccessUUID string
+	Username   string
+}

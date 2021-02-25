@@ -19,16 +19,21 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+
+	"github.com/go-redis/redis/v7"
 )
 
 var gDriveClient *GDriveClient
 var jwtConfig struct {
 	SecretKey string
 }
+var redisClient *redis.Client
+var cfg Config
 
 // RunServer will run the HTTP Server
 func (config Config) RunServer() {
@@ -91,6 +96,14 @@ func main() {
 	}
 	gDriveClient = initClient
 	jwtConfig.SecretKey = cfg.JWT.SecretKey
+
+	redisClient = redis.NewClient(&redis.Options{
+		Addr: fmt.Sprintf("%s:%s", cfg.Redis.Host, cfg.Redis.Port),
+	})
+	_, err = redisClient.Ping().Result()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	initGovalidatorCustomRule()
 
